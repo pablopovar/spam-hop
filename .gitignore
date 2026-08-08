@@ -1,0 +1,6 @@
+.env
+tmp.sh
+.patch
+*.patch
+__pycache__/
+*.pyc

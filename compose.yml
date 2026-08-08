@@ -1,7 +1,0 @@
-services:
-  spamhop:
-    build: .
-    container_name: spamhop
-    restart: unless-stopped
-    volumes:
-      - .:/app

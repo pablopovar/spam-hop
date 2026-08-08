@@ -1,0 +1,20 @@
+name: spamhop
+
+services:
+  spamhop:
+    build: .
+    container_name: spamhop
+    restart: unless-stopped
+
+    ports:
+      - "1143:1143"
+
+    environment:
+      SPAMHOP_LISTEN: ":1143"
+
+      SPAMHOP_UPSTREAM: "${SPAMHOP_UPSTREAM:-imap.example.invalid:993}"
+      SPAMHOP_UPSTREAM_TLS: "${SPAMHOP_UPSTREAM_TLS:-implicit}"
+
+      SPAMHOP_PROCESSOR: "${SPAMHOP_PROCESSOR:-spamhop.processor.passthrough:Processor}"
+      SPAMHOP_PROCESSOR_LISTEN: "127.0.0.1:18080"
+      SPAMHOP_PROCESSOR_URL: "http://127.0.0.1:18080"
