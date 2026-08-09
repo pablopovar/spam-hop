@@ -2,11 +2,12 @@ FROM golang:1.26.5-alpine AS transport-build
 
 WORKDIR /src
 
-COPY transport/go.mod transport/go.sum ./
+COPY transport/go.mod ./
 RUN go mod download
 
 COPY transport/ ./
 
+RUN go mod verify
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags="-s -w" \
