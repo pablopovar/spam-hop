@@ -1,4 +1,4 @@
-module github.com/pablopovar/spam-proxy/transport
+module github.com/pablopovar/spam-hop/transport
 
 go 1.26
 

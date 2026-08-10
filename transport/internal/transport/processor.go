@@ -3,11 +3,18 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+type ScoreResult struct {
+	Score   *float64 `json:"score"`
+	Verdict string   `json:"verdict"`
+	Engine  string   `json:"engine"`
+}
 
 type ProcessorClient struct {
 	url    string
@@ -23,42 +30,42 @@ func NewProcessorClient(url string) *ProcessorClient {
 	}
 }
 
-func (p *ProcessorClient) Process(
+func (p *ProcessorClient) Score(
 	ctx context.Context,
 	message []byte,
-) ([]byte, error) {
+) (ScoreResult, error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		p.url+"/process",
+		p.url+"/score",
 		bytes.NewReader(message),
 	)
 	if err != nil {
-		return nil, err
+		return ScoreResult{}, err
 	}
 
 	req.Header.Set("Content-Type", "message/rfc822")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return ScoreResult{}, err
 	}
 	defer resp.Body.Close()
 
-	switch resp.StatusCode {
-	case http.StatusNoContent:
-		return message, nil
-
-	case http.StatusOK:
-		return io.ReadAll(resp.Body)
-
-	default:
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-
-		return nil, fmt.Errorf(
+		return ScoreResult{}, fmt.Errorf(
 			"processor returned %s: %s",
 			resp.Status,
 			string(body),
 		)
 	}
+
+	var result ScoreResult
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	if err := decoder.Decode(&result); err != nil {
+		return ScoreResult{}, fmt.Errorf("decode processor result: %w", err)
+	}
+
+	return result, nil
 }

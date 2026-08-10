@@ -1,18 +1,17 @@
+from dataclasses import dataclass
 from typing import Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreResult:
+    score: float | None = None
+    verdict: str | None = None
+    engine: str | None = None
 
 
 class Processor(Protocol):
     name: str
 
-    def process(self, message: bytes) -> bytes | None:
-        """
-        Process one complete RFC message representation.
-
-        Return:
-            None:
-                Representation is unchanged.
-
-            bytes:
-                Replacement representation to expose downstream.
-        """
+    def score(self, message: bytes) -> ScoreResult:
+        """Score one complete RFC message representation."""
         ...

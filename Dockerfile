@@ -2,12 +2,13 @@ FROM golang:1.26.5-alpine AS transport-build
 
 WORKDIR /src
 
-COPY transport/go.mod ./
+COPY transport/go.mod transport/go.sum ./
 RUN go mod download
 
 COPY transport/ ./
 
 RUN go mod verify
+RUN go test ./...
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags="-s -w" \
@@ -22,6 +23,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 
 COPY spamhop ./spamhop
+RUN python -m compileall -q spamhop
 
 COPY --from=transport-build \
     /out/spamhop-transport \

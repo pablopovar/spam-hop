@@ -3,8 +3,7 @@ name: spamhop
 services:
   spamhop:
     build: .
-    container_name: spamhop
-#    restart: unless-stopped
+    restart: unless-stopped
 
     ports:
       - "1143:1143"

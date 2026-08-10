@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/pablopovar/spam-proxy/transport/internal/transport"
+	"github.com/pablopovar/spam-hop/transport/internal/transport"
 )
 
 func getenv(key string, fallback string) string {

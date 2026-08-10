@@ -471,12 +471,10 @@ func (s *session) Fetch(
 				)
 			}
 
-			representation, err =
-				s.processor.Process(
-					context.Background(),
-					original,
-				)
-
+			score, err := s.processor.Score(
+				context.Background(),
+				original,
+			)
 			if err != nil {
 				_ = command.Close()
 
@@ -485,6 +483,8 @@ func (s *session) Fetch(
 					err,
 				)
 			}
+
+			representation = BuildRepresentation(original, score)
 		}
 
 		out := writer.CreateMessage(
@@ -528,8 +528,7 @@ func (s *session) Fetch(
 			)
 		}
 
-		for _, section :=
-			range options.BodySection {
+		for _, section := range options.BodySection {
 			data :=
 				imapserver.ExtractBodySection(
 					bytes.NewReader(

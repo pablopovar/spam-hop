@@ -1,5 +1,8 @@
+from spamhop.processor.base import ScoreResult
+
+
 class Processor:
     name = "passthrough"
 
-    def process(self, message: bytes) -> bytes | None:
-        return None
+    def score(self, message: bytes) -> ScoreResult:
+        return ScoreResult(engine=self.name)
