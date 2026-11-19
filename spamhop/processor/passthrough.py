@@ -5,4 +5,4 @@ class Processor:
     name = "passthrough"
 
     def score(self, message: bytes) -> ScoreResult:
-        return ScoreResult(engine=self.name)
+        return ScoreResult()

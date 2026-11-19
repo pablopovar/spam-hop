@@ -6,14 +6,79 @@ services:
     restart: unless-stopped
 
     ports:
-      - "1143:1143"
+      - "${SPAMHOP_PORT:-1143}:1143"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      - ./config:/app/config:ro
+
+    depends_on:
+      rspamd:
+        condition: service_healthy
 
     environment:
       SPAMHOP_LISTEN: ":1143"
 
-      SPAMHOP_UPSTREAM: "${SPAMHOP_UPSTREAM:-imap.example.invalid:993}"
-      SPAMHOP_UPSTREAM_TLS: "${SPAMHOP_UPSTREAM_TLS:-implicit}"
+      SPAMHOP_CLIENT_USERNAME: "${SPAMHOP_CLIENT_USERNAME:-}"
+      SPAMHOP_CLIENT_PASSWORD: "${SPAMHOP_CLIENT_PASSWORD:-}"
 
-      SPAMHOP_PROCESSOR: "${SPAMHOP_PROCESSOR:-spamhop.processor.passthrough:Processor}"
+      SPAMHOP_UPSTREAM: "${SPAMHOP_UPSTREAM:-}"
+      SPAMHOP_UPSTREAM_TLS: "${SPAMHOP_UPSTREAM_TLS:-}"
+      SPAMHOP_UPSTREAM_USERNAME: "${SPAMHOP_UPSTREAM_USERNAME:-}"
+      SPAMHOP_UPSTREAM_PASSWORD: "${SPAMHOP_UPSTREAM_PASSWORD:-}"
+
+      SPAMHOP_PROCESSOR: "${SPAMHOP_PROCESSOR:-spamhop.processor.spam:Processor}"
       SPAMHOP_PROCESSOR_LISTEN: "127.0.0.1:18080"
       SPAMHOP_PROCESSOR_URL: "http://127.0.0.1:18080"
+
+      SPAMHOP_SPAM_THRESHOLD: "${SPAMHOP_SPAM_THRESHOLD:-0.70}"
+
+      SPAMHOP_RSPAMD_ENABLED: "${SPAMHOP_RSPAMD_ENABLED:-true}"
+      SPAMHOP_RSPAMD_URL: "${SPAMHOP_RSPAMD_URL:-http://rspamd:11333}"
+      SPAMHOP_RSPAMD_TIMEOUT_SECONDS: "${SPAMHOP_RSPAMD_TIMEOUT_SECONDS:-15}"
+      SPAMHOP_RSPAMD_SCORE_SCALE: "${SPAMHOP_RSPAMD_SCORE_SCALE:-6.0}"
+      SPAMHOP_RSPAMD_MAX_ADJUSTMENT: "${SPAMHOP_RSPAMD_MAX_ADJUSTMENT:-0.30}"
+
+      SPAMHOP_LLM_PROVIDER: "${SPAMHOP_LLM_PROVIDER:-}"
+      SPAMHOP_LLM_BASE_URL: "${SPAMHOP_LLM_BASE_URL:-}"
+      SPAMHOP_LLM_API_KEY: "${SPAMHOP_LLM_API_KEY:-}"
+      SPAMHOP_LLM_MODEL: "${SPAMHOP_LLM_MODEL:-}"
+      SPAMHOP_LLM_TIMEOUT_SECONDS: "${SPAMHOP_LLM_TIMEOUT_SECONDS:-}"
+      SPAMHOP_LLM_MAX_BYTES: "${SPAMHOP_LLM_MAX_BYTES:-}"
+      SPAMHOP_PROMPT_FILE: "${SPAMHOP_PROMPT_FILE:-}"
+
+  rspamd:
+    image: rspamd/rspamd:4.1.4
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      unbound:
+        condition: service_healthy
+    volumes:
+      - ./config/rspamd:/etc/rspamd/local.d:ro
+      - rspamd-data:/var/lib/rspamd
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-data:/data
+
+  unbound:
+    image: mvance/unbound:1.22.0
+    restart: unless-stopped
+    volumes:
+      - ./config/unbound/unbound.conf:/opt/unbound/etc/unbound/unbound.conf:ro
+
+volumes:
+  rspamd-data:
+  redis-data:

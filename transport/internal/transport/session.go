@@ -3,6 +3,8 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -78,10 +80,21 @@ func (s *session) Close() error {
 	return err
 }
 
+func secureEqual(a string, b string) bool {
+	aHash := sha256.Sum256([]byte(a))
+	bHash := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(aHash[:], bHash[:]) == 1
+}
+
 func (s *session) Login(
 	username string,
 	password string,
 ) error {
+	if !secureEqual(username, s.cfg.ClientUsername) ||
+		!secureEqual(password, s.cfg.ClientPassword) {
+		return imapserver.ErrAuthFailed
+	}
+
 	if s.upstream != nil {
 		_ = s.upstream.Close()
 		s.upstream = nil
@@ -93,8 +106,8 @@ func (s *session) Login(
 	}
 
 	if err := client.Login(
-		username,
-		password,
+		s.cfg.UpstreamUsername,
+		s.cfg.UpstreamPassword,
 	).Wait(); err != nil {
 		_ = client.Close()
 		return imapserver.ErrAuthFailed

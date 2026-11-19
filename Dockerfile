@@ -23,7 +23,10 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 
 COPY spamhop ./spamhop
-RUN python -m compileall -q spamhop
+COPY tests ./tests
+RUN python -m compileall -q spamhop tests
+RUN python -m unittest discover -s tests -v
+RUN rm -rf tests
 
 COPY --from=transport-build \
     /out/spamhop-transport \

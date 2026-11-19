@@ -2,9 +2,7 @@
 
 SpamHop is a **server- and client-agnostic spam scoring system that adds an independent processing Hop to the message transport pipeline.**
 
-**Current stage: Research & Architecture**
-
-SpamHop is being designed around one central idea: spam scoring should be independent from both the mail server and the mail client.
+**Current stage: Research & Architecture — runnable end-to-end prototype**
 
 ```text
 Sender
@@ -16,137 +14,86 @@ SpamHop
 User mail client
 ```
 
-SpamHop introduces a processing layer between the authoritative mail server and the client that receives the message.
+SpamHop leaves the authoritative upstream mailbox untouched. It scores the message representation in transit and adds SpamHop scoring metadata to the representation delivered downstream.
 
-## Core principles
-
-### Server agnostic
-
-SpamHop should not depend on a particular mail provider, MTA, mailbox implementation, or server-side plugin system.
-
-The upstream mail server remains authoritative.
-
-### Client agnostic
-
-SpamHop should work with ordinary mail clients without requiring a SpamHop-specific client, extension, or plugin.
-
-### Independent Hop
-
-SpamHop is not intended to modify the authoritative mailbox object.
-
-It receives the message representation from upstream, processes it, and exposes a derived representation downstream.
-
-### Spam scoring, not mailbox management
-
-SpamHop's responsibility is classification and scoring.
-
-It is not intended to become a general mail-management system.
-
-SpamHop does not own mailbox organization, folder movement, deletion, quarantine, or other user-facing mail actions.
-
-Those decisions remain with downstream systems or clients.
-
-### Replaceable spam engine
-
-The spam-scoring engine is a separate component.
-
-The transport must not depend on a specific:
-
-- language model;
-- spam engine;
-- API provider;
-- reputation service;
-- rule system;
-- security product.
-
-Different classifiers should be replaceable without redesigning the transport.
-
-## Architectural direction
-
-The current architecture separates the application and scoring system from the protocol transport.
-
-```text
-Python application
-    ├── configuration
-    ├── lifecycle
-    └── replaceable spam-scoring engine
-
-Go transport
-    ├── downstream IMAP server
-    ├── upstream IMAP client
-    └── message transport / representation
-```
-
-Python owns the SpamHop application.
-
-Go is deliberately restricted to the transport layer.
-
-The boundary between them is intended to remain small and explicit.
-
-## IMAP transport model
-
-For the current proof of concept:
+## Current architecture
 
 ```text
 IMAP client
-    ↓
-SpamHop
-    ↓
-upstream IMAP server
+    ↕
+Go IMAP transport ↔ upstream IMAP server
+    ↕
+Python scoring engine
 ```
 
-SpamHop behaves as:
+Python owns application lifecycle and scoring. Go owns IMAP transport and the downstream message representation. The scoring engine and LLM provider are replaceable components.
 
-- an IMAP server toward the user's mail client;
-- an IMAP client toward the upstream mail server;
-- an intermediate processing Hop between them.
+## Current implementation
 
-The upstream message remains untouched.
+The initial runnable version provides:
 
-The representation delivered downstream may contain SpamHop-derived classification information.
+- independent downstream IMAP credentials;
+- configurable upstream IMAP host, TLS mode, username and password;
+- configurable scoring processor;
+- configurable LLM provider, endpoint, API key and model;
+- configurable prompt file;
+- Ollama as the first provider implementation;
+- in-memory score caching by message content;
+- downstream `X-SpamHop-Score`, `X-SpamHop-Verdict`, and `X-SpamHop-Engine` metadata;
+- no mutation, movement, deletion, or re-upload of upstream messages.
 
-## Current research
+An email whose subject is exactly `SpamHop Positive Test` is deterministically scored as spam with score `1.0`. This test does not call the LLM.
 
-The project is currently validating the architecture before implementing the full spam engine.
+## Configuration
 
-Current work includes:
+Copy the example configuration:
 
-- correct intermediary IMAP behavior;
-- upstream/downstream representation semantics;
-- transport and classifier boundaries;
-- live processing versus short-lived transitional spooling;
-- compatibility with ordinary IMAP servers and clients;
-- failure behavior and transport reliability;
-- modular spam-scoring interfaces.
+```bash
+cp .env.example .env
+```
 
-## Current proof of concept
+Edit `.env`. No IMAP host, IMAP credential, prompt, LLM endpoint, API key, or model is embedded in application code.
 
-The repository contains an early transport implementation intended to prove the Hop architecture.
+The default prompt is stored at:
 
-It is not yet a production spam-filtering system.
+```text
+config/spam-prompt.txt
+```
 
-The current PoC intentionally excludes:
+It can be edited or replaced by changing `SPAMHOP_PROMPT_FILE`.
 
-- sophisticated spam classification;
-- model/provider integrations;
-- SPF, DKIM and DMARC analysis;
-- reputation and blacklist systems;
-- malware or antivirus integration;
-- management UI;
-- production authentication hardening;
-- provider-specific integrations.
+### Ollama on the Docker host
 
-Those belong after the transport architecture is proven.
+For the laptop deployment, `.env.example` uses:
 
-## Direction
+```text
+SPAMHOP_LLM_BASE_URL=http://host.docker.internal:11434
+```
 
-The long-term goal is a specialized spam-scoring layer that can combine multiple forms of evidence while remaining independent from the systems on either side of it.
+Compose maps `host.docker.internal` to the Linux Docker host. Ollama's local API does not require authentication; leave `SPAMHOP_LLM_API_KEY` empty for that setup.
 
-SpamHop should be able to evolve its classification engine without forcing users to change mail servers or mail clients.
+## Run
 
-The Hop is the stable architectural boundary.
+```bash
+docker compose build
+docker compose up -d
+docker compose logs --tail=50
+```
 
-The spam engine is replaceable.
+Configure the mail client to connect to the SpamHop host on the configured `SPAMHOP_PORT` using `SPAMHOP_CLIENT_USERNAME` and `SPAMHOP_CLIENT_PASSWORD`.
+
+## Principles
+
+- Server agnostic.
+- Client agnostic.
+- Upstream messages remain authoritative.
+- Spam scoring is specialized and replaceable.
+- Transport, representation, and scoring remain separate concerns.
+- Provider and model choices are configuration, not architecture.
+
+## Current limitations
+
+This is an initial single-mailbox research implementation. Downstream TLS, persistent score storage/spooling, multi-account operation, additional scoring providers, and broader anti-spam signals are not yet implemented.
 
 ## License
 
