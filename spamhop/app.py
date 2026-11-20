@@ -54,10 +54,21 @@ def main() -> int:
     thread.start()
 
     review = None
-    if os.getenv("SPAMHOP_REVIEW_ENABLED", "false").lower() in ("1", "true", "yes", "on"):
-        review = ReviewService.from_env(on_learn=getattr(processor, "clear_cache", None))
-        review.start(parse_address(os.getenv("SPAMHOP_REVIEW_LISTEN", "0.0.0.0:18081")))
-        log.info("review UI enabled (metadata only)")
+    training_enabled = os.getenv("SPAMHOP_TRAINING_ENABLED", "false").lower() in (
+        "1", "true", "yes", "on"
+    )
+    review_enabled = (
+        os.getenv("SPAMHOP_REVIEW_ENABLED", "false").lower()
+        in ("1", "true", "yes", "on")
+    ) or training_enabled
+    if review_enabled:
+        review = ReviewService.from_env()
+        if training_enabled:
+            processor.recorder = review.store.record
+        review.start(parse_address(os.getenv(
+            "SPAMHOP_REVIEW_LISTEN", "0.0.0.0:18081"
+        )))
+        log.info("review UI enabled; seven-day training capture=%s", training_enabled)
 
     log.info("processor=%s", processor.name)
 
