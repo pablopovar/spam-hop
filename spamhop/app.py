@@ -6,6 +6,7 @@ import threading
 
 from spamhop.processor.loader import load_processor
 from spamhop.processor.server import ProcessorHTTPServer
+from spamhop.review import ReviewService
 
 
 logging.basicConfig(
@@ -52,6 +53,12 @@ def main() -> int:
 
     thread.start()
 
+    review = None
+    if os.getenv("SPAMHOP_REVIEW_ENABLED", "false").lower() in ("1", "true", "yes", "on"):
+        review = ReviewService.from_env(on_learn=getattr(processor, "clear_cache", None))
+        review.start(parse_address(os.getenv("SPAMHOP_REVIEW_LISTEN", "0.0.0.0:18081")))
+        log.info("review UI enabled (metadata only)")
+
     log.info("processor=%s", processor.name)
 
     transport = subprocess.Popen([transport_binary])
@@ -66,5 +73,7 @@ def main() -> int:
     try:
         return transport.wait()
     finally:
+        if review is not None:
+            review.close()
         server.shutdown()
         server.server_close()
