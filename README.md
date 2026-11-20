@@ -39,6 +39,8 @@ The initial runnable version provides:
 - configurable prompt file;
 - Ollama as the first provider implementation;
 - in-memory score caching by message content;
+- Rspamd/LLM hybrid scoring with SpamHop-owned thresholds;
+- optional metadata-only IMAP review queue and supervised Rspamd learning;
 - downstream `X-SpamHop-Score`, `X-SpamHop-Verdict`, and `X-SpamHop-Engine` metadata;
 - no mutation, movement, deletion, or re-upload of upstream messages.
 
@@ -72,6 +74,51 @@ SPAMHOP_LLM_BASE_URL=http://host.docker.internal:11434
 
 Compose maps `host.docker.internal` to the Linux Docker host. Ollama's local API does not require authentication; leave `SPAMHOP_LLM_API_KEY` empty for that setup.
 
+## Optional metadata-only review queue
+
+Enable the review UI in `.env`:
+
+```dotenv
+SPAMHOP_REVIEW_ENABLED=true
+SPAMHOP_REVIEW_USER=review
+SPAMHOP_REVIEW_PASSWORD=<your-private-review-password>
+SPAMHOP_REVIEW_RSPAMD_PASSWORD=<a-different-private-learning-password>
+SPAMHOP_REVIEW_MAILBOXES=INBOX
+SPAMHOP_REVIEW_PORT=8088
+```
+
+After `docker compose up -d --build`, open `http://127.0.0.1:8088/`
+on the **Docker host** and authenticate with the review user/password.
+The UI is deliberately bound to host loopback; use a secure tunnel for
+remote access, not a public HTTP listener.
+
+The indexer polls configured IMAP mailboxes, reads only message headers,
+and stores a small SQLite record for each encountered email. The list
+shows sender, recipient, subject, date, mailbox, review label and
+training status. The default window is the newest 500 messages per
+mailbox; adjust `SPAMHOP_REVIEW_MAX_MESSAGES` if needed.
+
+**Spam** and **Ham** buttons record feedback. SpamHop re-fetches the
+original message from upstream IMAP in read-only mode, checks UIDVALIDITY
+and header identity, submits it to the password-protected Rspamd
+controller `/learnspam` or `/learnham` endpoint, and discards the
+in-memory message bytes. Training does not modify the upstream mailbox.
+
+Only headers, feedback, and an IMAP locator (mailbox, UID, UIDVALIDITY,
+Message-ID) are persisted in the `review-data` volume. No message body
+or attachment is stored. When an email is moved or deleted, the label
+remains visible but learning may fail because the original cannot be
+retrieved at its recorded location. Feedback failures are retryable.
+
+No learning is triggered solely by moving a message into a folder.
+SpamCop.net is not contacted. This trains **Rspamd's local Bayesian
+classifier**, not the LLM. Rspamd's default Bayes classifier requires
+a sufficient corpus of both spam and ham (typically 200 of each)
+before the statistical symbols become active.
+
+Review is optional and disabled by default, preserving existing
+deployments until enabled and private credentials are configured.
+
 ## Run
 
 ```bash
@@ -93,7 +140,7 @@ Configure the mail client to connect to the SpamHop host on the configured `SPAM
 
 ## Current limitations
 
-This is an initial single-mailbox research implementation. Downstream TLS, persistent score storage/spooling, multi-account operation, additional scoring providers, and broader anti-spam signals are not yet implemented.
+This is an initial single-mailbox research implementation. Downstream TLS, multi-account operation, additional LLM providers, and full IMAP compatibility are not yet implemented. The review queue keeps metadata but not raw emails. Actual integration testing against HQ3/Rspamd is pending.
 
 ## License
 
