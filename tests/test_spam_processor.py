@@ -149,6 +149,29 @@ class SpamProcessorTests(unittest.TestCase):
         self.assertEqual(result.verdict, "unknown")
         self.assertEqual(result.engine, "unavailable")
 
+
+    def test_training_recorder_keeps_original_score_without_rescoring(self):
+        provider = FakeProvider(score=0.74)
+        rspamd = FakeRspamd(score=0.0)
+        processor = self.build_processor(provider, rspamd)
+        observed = []
+        processor.recorder = lambda message, result: observed.append((message, result))
+        message = b"From: alice@example.net\\r\\nSubject: test\\r\\n\\r\\nhello"
+        first = processor.score(message)
+        second = processor.score(message)
+        self.assertEqual(first, second)
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(rspamd.calls, 1)
+        self.assertEqual(len(observed), 2)
+        self.assertEqual(observed[0][0], message)
+        self.assertEqual(observed[0][1].score, 0.74)
+
+    def test_training_capture_failure_never_blocks_scoring(self):
+        processor = self.build_processor(FakeProvider(score=0.20), FakeRspamd())
+        processor.recorder = lambda *_: (_ for _ in ()).throw(OSError("disk full"))
+        result = processor.score(b"Subject: normal\\r\\n\\r\\nhello")
+        self.assertEqual(result.verdict, "ham")
+
     def test_result_is_cached_by_message(self):
         provider = FakeProvider(score=0.75)
         rspamd = FakeRspamd(score=0.0)
