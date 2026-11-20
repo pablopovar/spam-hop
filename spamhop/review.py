@@ -68,8 +68,9 @@ class ReviewStore:
         self.max_message_bytes = max_message_bytes
         self.clock = clock or time.time
         self.lock = threading.RLock()
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.samples_path.mkdir(parents=True, exist_ok=True)
+        Path(db_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.samples_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.samples_path, 0o700)
         with _database(self.db_path) as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -94,6 +95,7 @@ class ReviewStore:
                 CREATE INDEX IF NOT EXISTS recent_review
                   ON messages(observed_at DESC, id DESC);
             """)
+        os.chmod(self.db_path, 0o600)
         self.prune()
 
     def _sample_path(self, digest: str) -> Path:
@@ -221,6 +223,19 @@ class ReviewStore:
                         (row["id"],),
                     )
                     removed += 1
+                active = {
+                    row["digest"] for row in db.execute(
+                        "SELECT digest FROM messages WHERE payload_state='retained'"
+                    )
+                }
+            # Clean up files left behind by a crash between the atomic
+            # sample write and the SQLite insert.
+            for path in self.samples_path.glob("*.eml"):
+                if path.stem not in active:
+                    path.unlink(missing_ok=True)
+            for path in self.samples_path.glob(".tmp-*"):
+                if path.stat().st_mtime < time.time() - 3600:
+                    path.unlink(missing_ok=True)
         return removed
 
 
@@ -244,6 +259,10 @@ def rspamd_learning_request(url: str, password: str, message: bytes):
         with urlopen(request, timeout=30) as response:
             body = response.read(4097)
     except HTTPError as exc:
+        if exc.code >= 500:
+            raise LearningUncertain(
+                "Rspamd returned HTTP {}; training may have occurred".format(exc.code)
+            ) from exc
         raise LearningRejected("Rspamd returned HTTP {}".format(exc.code)) from exc
     except (URLError, TimeoutError, OSError) as exc:
         # A timeout/disconnect can occur AFTER the server learned the message.
@@ -280,11 +299,11 @@ class ReviewService:
         self.expiry_thread = None
 
     @classmethod
-    def from_env(cls):
+    def from_env(cls, *, require_credentials=True):
         username = os.getenv("SPAMHOP_REVIEW_USER", "").strip()
         password = os.getenv("SPAMHOP_REVIEW_PASSWORD", "")
         controller_password = os.getenv("SPAMHOP_REVIEW_RSPAMD_PASSWORD", "")
-        if not username or not password or not controller_password:
+        if require_credentials and (not username or not password or not controller_password):
             raise RuntimeError("Review username, password and Rspamd learning password are required")
         return cls(
             store=ReviewStore(
