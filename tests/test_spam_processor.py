@@ -156,7 +156,7 @@ class SpamProcessorTests(unittest.TestCase):
         processor = self.build_processor(provider, rspamd)
         observed = []
         processor.recorder = lambda message, result: observed.append((message, result))
-        message = b"From: alice@example.net\\r\\nSubject: test\\r\\n\\r\\nhello"
+        message = b"From: alice@example.net\r\nSubject: test\r\n\r\nhello"
         first = processor.score(message)
         second = processor.score(message)
         self.assertEqual(first, second)
@@ -169,7 +169,7 @@ class SpamProcessorTests(unittest.TestCase):
     def test_training_capture_failure_never_blocks_scoring(self):
         processor = self.build_processor(FakeProvider(score=0.20), FakeRspamd())
         processor.recorder = lambda *_: (_ for _ in ()).throw(OSError("disk full"))
-        result = processor.score(b"Subject: normal\\r\\n\\r\\nhello")
+        result = processor.score(b"Subject: normal\r\n\r\nhello")
         self.assertEqual(result.verdict, "ham")
 
     def test_result_is_cached_by_message(self):
