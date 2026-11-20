@@ -65,10 +65,18 @@ class ReviewStore:
                 CREATE INDEX IF NOT EXISTS messages_recent ON messages(id DESC);
             """)
 
+    @contextmanager
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def exists(self, mailbox: str, validity: int, uid: int) -> bool:
         with self._connect() as db:
