@@ -1,11 +1,13 @@
 import logging
 import os
+from pathlib import Path
 import signal
 import subprocess
 import threading
 
 from spamhop.processor.loader import load_processor
 from spamhop.processor.server import ProcessorHTTPServer
+from spamhop.review import ReviewService
 
 
 logging.basicConfig(
@@ -52,6 +54,31 @@ def main() -> int:
 
     thread.start()
 
+    review = None
+    training_enabled = os.getenv("SPAMHOP_TRAINING_ENABLED", "false").lower() in (
+        "1", "true", "yes", "on"
+    )
+    review_enabled = (
+        os.getenv("SPAMHOP_REVIEW_ENABLED", "false").lower()
+        in ("1", "true", "yes", "on")
+    ) or training_enabled
+    stored_review = Path(os.getenv(
+        "SPAMHOP_REVIEW_DB", "/data/review.sqlite3"
+    )).is_file()
+    if review_enabled or stored_review:
+        review = ReviewService.from_env(require_credentials=review_enabled)
+        if training_enabled:
+            processor.recorder = review.store.record
+        address = (
+            parse_address(os.getenv("SPAMHOP_REVIEW_LISTEN", "0.0.0.0:18081"))
+            if review_enabled else None
+        )
+        review.start(address)
+        log.info(
+            "review UI=%s; seven-day training capture=%s; cleanup active",
+            review_enabled, training_enabled,
+        )
+
     log.info("processor=%s", processor.name)
 
     transport = subprocess.Popen([transport_binary])
@@ -66,5 +93,7 @@ def main() -> int:
     try:
         return transport.wait()
     finally:
+        if review is not None:
+            review.close()
         server.shutdown()
         server.server_close()

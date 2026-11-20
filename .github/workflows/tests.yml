@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m compileall -q spamhop tests
+      - run: python -m unittest discover -s tests -v
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: transport/go.mod
+      - run: cd transport && go test ./...
+
+  rspamd-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose interpolation
+        run: docker compose config --quiet
+      - name: Validate Rspamd configuration
+        run: |
+          docker run --rm \
+            -e RSPAMD_CONTROLLER_PASSWORD=ci-test-secret \
+            -v "$PWD/config/rspamd:/etc/rspamd/local.d:ro" \
+            rspamd/rspamd:4.1.4 rspamadm configtest

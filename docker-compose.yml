@@ -7,12 +7,15 @@ services:
 
     ports:
       - "${SPAMHOP_PORT:-1143}:1143"
+      # Review UI is reachable only from the Docker host by default.
+      - "127.0.0.1:${SPAMHOP_REVIEW_PORT:-8088}:18081"
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
     volumes:
       - ./config:/app/config:ro
+      - review-data:/data
 
     depends_on:
       rspamd:
@@ -20,6 +23,19 @@ services:
 
     environment:
       SPAMHOP_LISTEN: ":1143"
+      SPAMHOP_REVIEW_ENABLED: "${SPAMHOP_REVIEW_ENABLED:-false}"
+      SPAMHOP_TRAINING_ENABLED: "${SPAMHOP_TRAINING_ENABLED:-false}"
+      SPAMHOP_TRAINING_MAX_MESSAGE_BYTES: "${SPAMHOP_TRAINING_MAX_MESSAGE_BYTES:-26214400}"
+      SPAMHOP_TRAINING_SAMPLES_DIR: "/data/training"
+      SPAMHOP_REVIEW_LISTEN: "0.0.0.0:18081"
+      SPAMHOP_REVIEW_USER: "${SPAMHOP_REVIEW_USER:-}"
+      SPAMHOP_REVIEW_PASSWORD: "${SPAMHOP_REVIEW_PASSWORD:-}"
+      SPAMHOP_REVIEW_DB: "/data/review.sqlite3"
+      SPAMHOP_REVIEW_MAILBOXES: "${SPAMHOP_REVIEW_MAILBOXES:-INBOX}"
+      SPAMHOP_REVIEW_MAX_MESSAGES: "${SPAMHOP_REVIEW_MAX_MESSAGES:-500}"
+      SPAMHOP_REVIEW_POLL_SECONDS: "${SPAMHOP_REVIEW_POLL_SECONDS:-120}"
+      SPAMHOP_REVIEW_RSPAMD_URL: "http://rspamd:11334"
+      SPAMHOP_REVIEW_RSPAMD_PASSWORD: "${SPAMHOP_REVIEW_RSPAMD_PASSWORD:-}"
 
       SPAMHOP_CLIENT_USERNAME: "${SPAMHOP_CLIENT_USERNAME:-}"
       SPAMHOP_CLIENT_PASSWORD: "${SPAMHOP_CLIENT_PASSWORD:-}"
@@ -51,6 +67,8 @@ services:
 
   rspamd:
     image: rspamd/rspamd:4.1.4
+    environment:
+      RSPAMD_CONTROLLER_PASSWORD: "${SPAMHOP_REVIEW_RSPAMD_PASSWORD:-}"
     restart: unless-stopped
     depends_on:
       redis:
@@ -80,5 +98,6 @@ services:
       - ./config/unbound/unbound.conf:/opt/unbound/etc/unbound/unbound.conf:ro
 
 volumes:
+  review-data:
   rspamd-data:
   redis-data:

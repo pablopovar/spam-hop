@@ -47,8 +47,25 @@ class Processor:
         )
         self._cache: dict[str, ScoreResult] = {}
         self._cache_lock = threading.Lock()
+        self.recorder = None
+
+    def clear_cache(self):
+        """Invalidate previous scores when the local statistical model changes."""
+        with self._cache_lock:
+            self._cache.clear()
 
     def score(self, message: bytes) -> ScoreResult:
+        """Compute a verdict, then capture it without changing classification."""
+        result = self._score(message)
+        if self.recorder is not None:
+            try:
+                self.recorder(message, result)
+            except Exception:
+                # Training storage must never block ordinary IMAP retrieval.
+                LOG.exception("Training capture failed")
+        return result
+
+    def _score(self, message: bytes) -> ScoreResult:
         parsed = BytesParser(policy=policy.default).parsebytes(message, headersonly=True)
         subject = str(parsed.get("Subject", "")).strip()
 
