@@ -1,175 +1,225 @@
-import base64
-from contextlib import contextmanager
+import json
 import os
+from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
 
+from spamhop.processor.base import ScoreResult
 from spamhop.review import (
-    ReviewService,
-    ReviewStore,
-    fetch_uid,
-    message_fields,
-    select_readonly,
+    LearningRejected, LearningUncertain, ReviewService,
+    ReviewStore, rspamd_learning_request,
 )
 
 
-HEADERS = (
+MESSAGE = (
     b"From: Alice <alice@example.com>\r\n"
     b"To: Bob <bob@example.com>\r\n"
     b"Subject: Hello\r\n"
     b"Date: Wed, 19 Aug 2026 13:00:00 -0400\r\n"
     b"Message-ID: <one@example.com>\r\n"
+    b"\r\nSecret body that must never persist after expiration.\r\n"
 )
-MESSAGE = HEADERS + b"\r\nSecret body that must never persist.\r\n"
-
-
-class FakeIMAP:
-    def __init__(self, validity=99):
-        self.validity = validity
-        self.selected = None
-
-    def select(self, name, readonly=False):
-        self.selected = name
-        if not readonly:
-            raise AssertionError("Review must never change the mailbox")
-        return "OK", [b"1"]
-
-    def response(self, name):
-        return "OK", [str(self.validity).encode("ascii")]
-
-    def uid(self, command, *args):
-        if command == "SEARCH":
-            return "OK", [b"7"]
-        if command == "FETCH":
-            fields_only = "HEADER.FIELDS" in args[-1]
-            return "OK", [(b"7 FETCH ...", HEADERS if fields_only else MESSAGE), b")"]
-        raise AssertionError(command)
-
-
-@contextmanager
-def fake_connection(imap):
-    yield imap
 
 
 class FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        return None
+        pass
 
     def read(self, length):
-        return b'{"success":true}'
+        return self.payload
 
 
 class ReviewQueueTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
-        self.db_path = os.path.join(self.folder.name, "review.sqlite3")
-        self.store = ReviewStore(self.db_path)
+        self.now = [1000000]
+        base = Path(self.folder.name)
+        self.db_path = base / "review.sqlite3"
+        self.samples = base / "samples"
+        self.store = ReviewStore(
+            str(self.db_path), str(self.samples),
+            retention_seconds=7 * 86400,
+            clock=lambda: self.now[0],
+        )
 
     def tearDown(self):
         self.folder.cleanup()
 
-    def add_one(self):
-        self.store.add("INBOX", 99, 7, message_fields(HEADERS))
-        return self.store.list("all")[0]["id"]
+    def capture(self, message=MESSAGE, score=0.22):
+        self.store.record(message, ScoreResult(
+            score=score, verdict="ham", engine="ollama:test+rspamd",
+        ))
+        return self.store.list()[0]["id"]
 
-    def service(self, on_learn=None):
+    def service(self):
         return ReviewService(
             store=self.store,
-            mailboxes=("INBOX",),
             controller_url="http://rspamd.invalid:11334",
-            controller_password="secret",
-            poll_seconds=120,
-            max_messages=500,
+            controller_password="controller-secret",
             username="review",
-            password="another-secret",
-            on_learn=on_learn,
+            password="review-secret",
         )
 
-    def test_index_stores_only_metadata(self):
-        service = self.service()
-        imap = FakeIMAP()
-        with patch("spamhop.review.upstream_imap", side_effect=lambda: fake_connection(imap)):
-            self.assertEqual(service.sync_once(), 1)
-            self.assertEqual(service.sync_once(), 0)
-        row = self.store.list("all")[0]
+    def test_scoring_snapshot_has_requested_fields(self):
+        item_id = self.capture()
+        row = self.store.get(item_id)
         self.assertEqual(row["sender"], "Alice <alice@example.com>")
         self.assertEqual(row["recipient"], "Bob <bob@example.com>")
         self.assertEqual(row["subject"], "Hello")
         self.assertEqual(row["message_date"], "Wed, 19 Aug 2026 13:00:00 -0400")
-        self.assertEqual(row["mailbox"], "INBOX")
-        self.assertEqual(row["uid"], 7)
-        self.assertEqual(row["uidvalidity"], 99)
-        self.assertNotIn(b"Secret body", open(self.db_path, "rb").read())
+        self.assertEqual(row["original_score"], 0.22)
+        self.assertEqual(row["original_verdict"], "ham")
+        self.assertEqual(row["original_engine"], "ollama:test+rspamd")
+        self.assertIsNone(row["label"])
 
-    def test_train_spam_fetches_original_on_demand(self):
-        row_id = self.add_one()
-        callback = []
-        service = self.service(on_learn=lambda: callback.append("invalidated"))
-        imap = FakeIMAP()
-        with patch("spamhop.review.upstream_imap", side_effect=lambda: fake_connection(imap)), \
-             patch("spamhop.review.urlopen", return_value=FakeResponse()) as urlopen:
-            self.assertEqual(service.label(row_id, "spam"), "Learned as spam")
-            self.assertEqual(service.label(row_id, "spam"), "Already trained as spam")
-        self.assertEqual(urlopen.call_count, 1)
-        request = urlopen.call_args.args[0]
+    def test_capture_does_not_extend_retention(self):
+        item_id = self.capture()
+        first_expiry = self.store.get(item_id)["expires_at"]
+        self.now[0] += 86400
+        self.capture(score=0.99)
+        self.assertEqual(self.store.get(item_id)["expires_at"], first_expiry)
+        self.assertEqual(self.store.get(item_id)["original_score"], 0.22)
+        self.assertEqual(len(self.store.list()), 1)
+
+    def test_seven_day_expiration_removes_raw_only(self):
+        item_id = self.capture()
+        self.assertEqual(len(list(self.samples.glob("*.eml"))), 1)
+        self.now[0] += 7 * 86400
+        self.assertEqual(self.store.prune(), 1)
+        self.assertEqual(len(list(self.samples.glob("*.eml"))), 0)
+        self.assertEqual(self.store.get(item_id)["payload_state"], "expired")
+        self.assertEqual(self.store.get(item_id)["original_score"], 0.22)
+        self.assertNotIn(b"Secret body", self.db_path.read_bytes())
+
+    def test_prune_when_restart(self):
+        self.capture()
+        self.now[0] += 7 * 86400 + 1
+        fresh = ReviewStore(
+            str(self.db_path), str(self.samples),
+            clock=lambda: self.now[0],
+        )
+        self.assertEqual(fresh.list()[0]["payload_state"], "expired")
+        self.assertEqual(len(list(self.samples.glob("*.eml"))), 0)
+
+    def test_max_bytes_does_not_persist_large_email(self):
+        base = Path(self.folder.name)
+        limited = ReviewStore(
+            str(base / "small.sqlite3"), str(base / "other"),
+            max_message_bytes=10, clock=lambda: self.now[0],
+        )
+        self.assertTrue(limited.record(MESSAGE, ScoreResult(
+            score=0.9, verdict="spam", engine="test",
+        )))
+        self.assertEqual(limited.list()[0]["payload_state"], "too-large")
+        self.assertEqual(list((base / "other").glob("*.eml")), [])
+
+    def test_learning_is_confirmed_only_on_exact_success(self):
+        item_id = self.capture()
+        service = self.service()
+        with patch("spamhop.review.urlopen", return_value=FakeResponse(
+            b'{"success": true}'
+        )) as call:
+            self.assertEqual(service.label(item_id, "spam"),
+                             "Confirmed learned as spam")
+        request = call.call_args.args[0]
         self.assertTrue(request.full_url.endswith("/learnspam"))
         self.assertEqual(request.data, MESSAGE)
-        self.assertEqual(self.store.get(row_id)["trained_label"], "spam")
-        self.assertEqual(callback, ["invalidated"])
-        self.assertNotIn(b"Secret body", open(self.db_path, "rb").read())
+        row = self.store.get(item_id)
+        self.assertEqual(row["trained_label"], "spam")
+        self.assertEqual(row["label"], "spam")
+        self.assertEqual(row["training_status"], "learned")
+        self.assertEqual(row["original_score"], 0.22)
+        with patch("spamhop.review.urlopen") as repeat:
+            self.assertEqual(service.label(item_id, "spam"),
+                             "Already learned as spam")
+            repeat.assert_not_called()
 
-    def test_invalid_uidvalidity_prevents_training(self):
-        row_id = self.add_one()
-        service = self.service()
-        imap = FakeIMAP(validity=100)
-        with patch("spamhop.review.upstream_imap", side_effect=lambda: fake_connection(imap)), \
-             patch("spamhop.review.urlopen") as urlopen:
-            with self.assertRaises(RuntimeError):
-                service.label(row_id, "ham")
-            urlopen.assert_not_called()
-        row = self.store.get(row_id)
-        self.assertEqual(row["label"], "ham")
+    def test_ham_training_on_same_original_score(self):
+        item_id = self.capture(score=0.99)
+        with patch("spamhop.review.urlopen", return_value=FakeResponse(
+            b'{"success": true}'
+        )) as call:
+            self.service().label(item_id, "ham")
+        self.assertEqual(call.call_args.args[0].data, MESSAGE)
+        self.assertTrue(call.call_args.args[0].full_url.endswith("/learnham"))
+        self.assertEqual(self.store.get(item_id)["original_score"], 0.99)
+        self.assertEqual(self.store.get(item_id)["trained_label"], "ham")
+
+    def test_empty_response_is_not_recorded_as_success(self):
+        item_id = self.capture()
+        with patch("spamhop.review.urlopen", return_value=FakeResponse(b"")):
+            self.assertIn("uncertain", self.service().label(item_id, "spam"))
+        row = self.store.get(item_id)
+        self.assertIsNone(row["trained_label"])
+        self.assertEqual(row["training_status"], "uncertain")
+
+    def test_malformed_json_is_uncertain(self):
+        item_id = self.capture()
+        with patch("spamhop.review.urlopen", return_value=FakeResponse(b"OK")):
+            self.service().label(item_id, "ham")
+        self.assertEqual(self.store.get(item_id)["training_status"], "uncertain")
+
+    def test_success_must_be_exact_true_not_truthy(self):
+        for payload in [b'{}', b'{"success":1}', b'{"success":"true"}']:
+            with self.subTest(payload=payload):
+                with patch("spamhop.review.urlopen", return_value=FakeResponse(payload)):
+                    with self.assertRaises(LearningUncertain):
+                        rspamd_learning_request("http://invalid/learnspam", "pw", MESSAGE)
+
+    def test_explicit_rejection_is_error(self):
+        item_id = self.capture()
+        with patch("spamhop.review.urlopen", return_value=FakeResponse(
+            b'{"success": false, "error": "reject"}'
+        )):
+            self.assertIn("rejected", self.service().label(item_id, "spam"))
+        row = self.store.get(item_id)
         self.assertEqual(row["training_status"], "error")
         self.assertIsNone(row["trained_label"])
 
-    def test_message_identity_change_prevents_training(self):
-        row_id = self.add_one()
-        service = self.service()
-        with patch("spamhop.review.upstream_imap", side_effect=lambda: fake_connection(FakeIMAP())), \
-             patch("spamhop.review.fetch_uid", return_value=b"From: Eve <eve@example.net>\r\n\r\nwrong"), \
-             patch("spamhop.review.urlopen") as urlopen:
-            with self.assertRaises(RuntimeError):
-                service.label(row_id, "ham")
-            urlopen.assert_not_called()
+    def test_connection_drop_is_uncertain(self):
+        item_id = self.capture()
+        with patch("spamhop.review.urlopen", side_effect=URLError("offline")):
+            self.assertIn("uncertain", self.service().label(item_id, "spam"))
+        self.assertEqual(self.store.get(item_id)["training_status"], "uncertain")
 
-    def test_no_message_body_in_database_schema(self):
-        with sqlite3.connect(self.db_path) as db:
-            columns = [col[1] for col in db.execute("PRAGMA table_info(messages)")]
+    def test_expired_sample_saves_feedback_but_does_not_train(self):
+        item_id = self.capture()
+        self.now[0] += 7 * 86400 + 1
+        self.store.prune()
+        with patch("spamhop.review.urlopen") as call:
+            self.assertIn("unavailable", self.service().label(item_id, "spam"))
+            call.assert_not_called()
+        self.assertEqual(self.store.get(item_id)["label"], "spam")
+        self.assertEqual(self.store.get(item_id)["training_status"], "expired")
+
+    def test_retained_sample_is_integrity_checked(self):
+        item_id = self.capture()
+        sample = list(self.samples.glob("*.eml"))[0]
+        sample.write_bytes(b"altered")
+        with patch("spamhop.review.urlopen") as call:
+            self.service().label(item_id, "ham")
+            call.assert_not_called()
+        self.assertEqual(self.store.get(item_id)["training_status"], "error")
+
+    def test_database_never_stores_body(self):
+        self.capture()
+        columns = [
+            row[1] for row in sqlite3.connect(self.db_path).execute(
+                "PRAGMA table_info(messages)"
+            )
+        ]
         self.assertNotIn("body", columns)
         self.assertNotIn("raw_message", columns)
-        self.assertNotIn("headers", columns)
-
-    def test_filter_and_label(self):
-        a = self.add_one()
-        self.store.add("INBOX", 99, 8, {
-            "sender": "x@example.com", "recipient": "y@example.com",
-            "subject": "Subject", "message_date": "", "message_id": "",
-        })
-        self.store.mark(a, "spam")
-        self.store.finish(a, "spam")
-        self.assertEqual(len(self.store.list("spam")), 1)
-        self.assertEqual(len(self.store.list("ham")), 0)
-        self.assertEqual(len(self.store.list("unreviewed")), 1)
-
-    def test_fetch_uid_uses_peek_not_mark_seen(self):
-        imap = FakeIMAP()
-        self.assertEqual(fetch_uid(imap, 7, headers_only=False), MESSAGE)
-        self.assertEqual(select_readonly(imap, "INBOX"), 99)
+        self.assertNotIn(b"Secret body", self.db_path.read_bytes())
 
 
 if __name__ == "__main__":
